@@ -10,6 +10,7 @@ python3 ./sampleFuse.py ./primaryFS/ ./fallbackFS/ ./mountPoint/
 Usage: with another terminal as root you can list the directory
 """
 
+# Specially thanks to: https://github.com/skorokithakis/python-fuse-sample/
 
 import os
 import sys

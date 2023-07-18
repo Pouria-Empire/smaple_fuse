@@ -28,26 +28,30 @@ class Passthrough(Operations):
             subprocess.run(unmount_command, check=True)
             print("Server unmounted")
 
-    
+
     def _full_path(self, partial, useFallBack=False):
         if partial.startswith("/"):
             partial = partial[1:]
-        path = primaryPath = os.path.join(
-            self.fallbackPath if useFallBack else self.root, partial)
 
+        # Find out the real path. If it has been requested for a fallback path, use it.
+        path = primaryPath = os.path.join(self.root if not useFallBack else self.fallbackPath, partial)
+
+        # If the path does not exist and we haven't been asked for the fallback path, try to look in the fallback filesystem.
         if not os.path.exists(primaryPath) and not useFallBack:
             path = fallbackPath = os.path.join(self.fallbackPath, partial)
-            if not os.path.exists(fallbackPath):
-                primaryDir = os.path.dirname(primaryPath)
-                fallbackDir = os.path.dirname(fallbackPath)
 
-                if os.path.exists(primaryDir) or not os.path.exists(fallbackDir):
-                    path = primaryPath
+            # If the path does not exist in the fallback filesystem, check if it exists in the remote filesystem.
+            if not os.path.exists(fallbackPath) and self.remote_host and self.remote_directory and self.local_mount_point:
+                remote_full_path = os.path.join(self.local_mount_point, partial)
+                if os.path.exists(remote_full_path):
+                    path = remote_full_path
 
         return path
 
 
+
     def access(self, path, mode):
+        print("accessing the files")
         full_path = self._full_path(path)
         if not os.access(full_path, mode):
             raise FuseOSError(errno.EACCES)
@@ -82,15 +86,14 @@ class Passthrough(Operations):
             remote_full_path = self.local_mount_point
             print(remote_full_path)
             if os.path.isdir(remote_full_path):
-                with os.scandir(remote_full_path) as it:
-                    for entry in it:
-                        if entry.is_file() or entry.is_dir():
-                            dirents.append(entry.name)
+                dirents.extend(os.listdir(remote_full_path))
 
         for r in set(dirents):
             yield r
 
+
     def readlink(self, path):
+        print("Reading the link")
         pathname = os.readlink(self._full_path(path))
         if pathname.startswith("/"):
             # Path name is absolute, sanitize it.
@@ -134,25 +137,63 @@ class Passthrough(Operations):
     # ============
 
     def open(self, path, flags):
+        print("Opening")
         full_path = self._full_path(path)
+        
+        if self.remote_host and self.remote_directory and self.local_mount_point:
+            remote_full_path = os.path.join(self.local_mount_point, path)
+            if os.path.exists(remote_full_path):
+                return os.open(remote_full_path, flags)
+
         return os.open(full_path, flags)
 
     def create(self, path, mode, fi=None):
+        print("creating")
         full_path = self._full_path(path)
-        return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
+        
+        if self.remote_host and self.remote_directory and self.local_mount_point:
+            remote_full_path = os.path.join(self.local_mount_point, path)
+            return os.open(remote_full_path, os.O_WRONLY | os.O_CREAT, mode)
 
+        return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
+    
     def read(self, path, length, offset, fh):
+        print("reading function")
         os.lseek(fh, offset, os.SEEK_SET)
+
+        if self.remote_host and self.remote_directory and self.local_mount_point:
+            remote_full_path = os.path.join(self.local_mount_point, path)
+            print("remote accessing file")
+            print(remote_full_path)
+            if os.path.exists(remote_full_path):
+                with open(remote_full_path, 'rb') as f:
+                    f.seek(offset)
+                    return f.read(length)
+
         return os.read(fh, length)
+
 
     def write(self, path, buf, offset, fh):
         os.lseek(fh, offset, os.SEEK_SET)
+        
+        if self.remote_host and self.remote_directory and self.local_mount_point:
+            return os.write(fh, buf)
+
         return os.write(fh, buf)
 
     def truncate(self, path, length, fh=None):
         full_path = self._full_path(path)
+        
+        if self.remote_host and self.remote_directory and self.local_mount_point:
+            remote_full_path = os.path.join(self.local_mount_point, path)
+            with open(remote_full_path, 'r+') as f:
+                f.truncate(length)
+            return 0
+
         with open(full_path, 'r+') as f:
             f.truncate(length)
+        return 0
+
 
     def flush(self, path, fh):
         return os.fsync(fh)
