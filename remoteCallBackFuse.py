@@ -4,9 +4,6 @@ import sys
 import errno
 
 from fuse import FUSE, FuseOSError, Operations
-
-
-
 class Passthrough(Operations):
     def __init__(self, root, fallbackPath=None, remote_host=None, remote_directory=None, local_mount_point=None):
         self.root = root
@@ -48,10 +45,7 @@ class Passthrough(Operations):
 
         return path
 
-
-
     def access(self, path, mode):
-        print("accessing the files")
         full_path = self._full_path(path)
         if not os.access(full_path, mode):
             raise FuseOSError(errno.EACCES)
@@ -93,7 +87,6 @@ class Passthrough(Operations):
 
 
     def readlink(self, path):
-        print("Reading the link")
         pathname = os.readlink(self._full_path(path))
         if pathname.startswith("/"):
             # Path name is absolute, sanitize it.
@@ -101,15 +94,13 @@ class Passthrough(Operations):
         else:
             return pathname
 
-    def mknod(self, path, mode, dev):
-        return os.mknod(self._full_path(path), mode, dev)
+    def mknod(self, path, mode, dev): return os.mknod(self._full_path(path), mode, dev)
 
     def rmdir(self, path):
         full_path = self._full_path(path)
         return os.rmdir(full_path)
 
-    def mkdir(self, path, mode):
-        return os.mkdir(self._full_path(path), mode)
+    def mkdir(self, path, mode): return os.mkdir(self._full_path(path), mode)
 
     def statfs(self, path):
         full_path = self._full_path(path)
@@ -118,20 +109,15 @@ class Passthrough(Operations):
                                                          'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
                                                          'f_frsize', 'f_namemax'))
 
-    def unlink(self, path):
-        return os.unlink(self._full_path(path))
+    def unlink(self, path): return os.unlink(self._full_path(path))
 
-    def symlink(self, name, target):
-        return os.symlink(name, self._full_path(target))
+    def symlink(self, name, target): return os.symlink(name, self._full_path(target))
 
-    def rename(self, old, new):
-        return os.rename(self._full_path(old), self._full_path(new))
+    def rename(self, old, new): return os.rename(self._full_path(old), self._full_path(new))
 
-    def link(self, target, name):
-        return os.link(self._full_path(target), self._full_path(name))
+    def link(self, target, name): return os.link(self._full_path(target), self._full_path(name))
 
-    def utimens(self, path, times=None):
-        return os.utime(self._full_path(path), times)
+    def utimens(self, path, times=None): return os.utime(self._full_path(path), times)
 
     # File methods
     # ============
@@ -148,7 +134,7 @@ class Passthrough(Operations):
         return os.open(full_path, flags)
 
     def create(self, path, mode, fi=None):
-        print("creating")
+        print("Creating")
         full_path = self._full_path(path)
         
         if self.remote_host and self.remote_directory and self.local_mount_point:
@@ -158,7 +144,7 @@ class Passthrough(Operations):
         return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
     
     def read(self, path, length, offset, fh):
-        print("reading function")
+        print("Reading function")
         os.lseek(fh, offset, os.SEEK_SET)
 
         if self.remote_host and self.remote_directory and self.local_mount_point:
