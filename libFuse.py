@@ -1,9 +1,8 @@
-import subprocess
 import os
 import sys
 import errno
-
-from fuse import FUSE, FuseOSError, Operations
+from libfuse import FUSE, FuseOSError, Operations
+import subprocess
 
 class Passthrough(Operations):
     def __init__(self, root, fallbackPath=None, remote_host=None, remote_directory=None, local_mount_point=None):
@@ -15,7 +14,7 @@ class Passthrough(Operations):
 
         if fallbackPath and remote_host and remote_directory and local_mount_point:
             # Mount the remote directory using SSHFS
-            mount_command = ['sshfs', f'{self.remote_host}:{self.remote_directory}', self.local_mount_point, '-o', 'nonempty,rw,sync_readdir']
+            mount_command = ['sshfs', f'{self.remote_host}:{self.remote_directory}', self.local_mount_point, '-o', 'nonempty,rw']
             subprocess.run(mount_command, check=True)
             print("Server mounted")
 
@@ -25,7 +24,6 @@ class Passthrough(Operations):
             unmount_command = ['fusermount', '-u', self.local_mount_point]
             subprocess.run(unmount_command, check=True)
             print("Server unmounted")
-
 
     def _full_path(self, partial, useFallBack=False):
         if partial.startswith("/"):
@@ -45,25 +43,6 @@ class Passthrough(Operations):
                     path = remote_full_path
 
         return path
-
-    def access(self, path, mode):
-        full_path = self._full_path(path)
-        if not os.access(full_path, mode):
-            raise FuseOSError(errno.EACCES)
-
-    def chmod(self, path, mode):
-        full_path = self._full_path(path)
-        return os.chmod(full_path, mode)
-
-    def chown(self, path, uid, gid):
-        full_path = self._full_path(path)
-        return os.chown(full_path, uid, gid)
-
-    def getattr(self, path, fh=None):
-        full_path = self._full_path(path)
-        st = os.lstat(full_path)
-        return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
-                                                        'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid', 'st_blocks'))
 
     def readdir(self, path, fh):
         dirents = ['.', '..']
@@ -85,11 +64,7 @@ class Passthrough(Operations):
             print(path)
             print(remote_full_path)
             if os.path.isdir(remote_full_path):
-                # Fetch file listings directly from the server
-                with os.scandir(remote_full_path) as it:
-                    for entry in it:
-                        if entry.is_file() or entry.is_dir():
-                            dirents.append(entry.name)
+                dirents.extend(os.listdir(remote_full_path))
 
         for r in set(dirents):
             yield r
@@ -102,121 +77,65 @@ class Passthrough(Operations):
         else:
             return pathname
 
-    def mknod(self, path, mode, dev): return os.mknod(self._full_path(path), mode, dev)
-
-    def rmdir(self, path):
+    def access(self, path, mode):
         full_path = self._full_path(path)
-        return os.rmdir(full_path)
+        if not os.access(full_path, mode):
+            raise FuseOSError(errno.EACCES)
 
-    def mkdir(self, path, mode): return os.mkdir(self._full_path(path), mode)
-
-    def statfs(self, path):
+    def chmod(self, path, mode):
         full_path = self._full_path(path)
-        stv = os.statvfs(full_path)
-        return dict((key, getattr(stv, key)) for key in ('f_bavail', 'f_bfree',
-                                                         'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
-                                                         'f_frsize', 'f_namemax'))
+        return os.chmod(full_path, mode)
 
-    def unlink(self, path): return os.unlink(self._full_path(path))
+    def chown(self, path, uid, gid):
+        full_path = self._full_path(path)
+        return os.chown(full_path, uid, gid)
 
-    def symlink(self, name, target): return os.symlink(name, self._full_path(target))
+    def getattr(self, path, fh=None):
+        full_path = self._full_path(path)
+        st = os.lstat(full_path)
+        return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
+                                                        'st_gid', 'st_mode', 'st_mtime',
+                                                        'st_nlink', 'st_size', 'st_uid'))
 
-    def rename(self, old, new): return os.rename(self._full_path(old), self._full_path(new))
+    def readdir(self, path, fh):
+        full_path = self._full_path(path)
+        dirents = ['.', '..'] + os.listdir(full_path)
+        for r in dirents:
+            yield r
 
-    def link(self, target, name): return os.link(self._full_path(target), self._full_path(name))
-
-    def utimens(self, path, times=None): return os.utime(self._full_path(path), times)
-
-    # File methods
-    # ============
+    def read(self, path, length, offset, fh):
+        full_path = self._full_path(path)
+        with open(full_path, 'rb') as f:
+            os.lseek(fh, offset, os.SEEK_SET)
+            return f.read(length)
 
     def open(self, path, flags):
-        print("Opening files")
         full_path = self._full_path(path)
-
-        if self.remote_host and self.remote_directory and self.local_mount_point:
-            remote_full_path = os.path.join(self.local_mount_point, path)
-            print("Trying to open a file in the remote path")
-            print(remote_full_path)
-            if os.path.exists(remote_full_path):
-                print("Open successful")
-                return os.open(remote_full_path, flags)
-
         return os.open(full_path, flags)
 
     def create(self, path, mode, fi=None):
         full_path = self._full_path(path)
-
-        if self.remote_host and self.remote_directory and self.local_mount_point:
-            remote_full_path = os.path.join(self.local_mount_point, path)
-            remote_dir = os.path.dirname(remote_full_path)
-
-            # Create the directory in the remote file system
-            if not os.path.exists(remote_dir):
-                os.makedirs(remote_dir)
-
-            return os.open(remote_full_path, os.O_WRONLY | os.O_CREAT, mode)
-
         return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
-
-    def read(self, path, length, offset, fh):
-        print("Reading function")
-        os.lseek(fh, offset, os.SEEK_SET)
-
-        if self.remote_host and self.remote_directory and self.local_mount_point:
-            remote_full_path = os.path.join(self.local_mount_point, path)
-            print("Remote accessing file")
-            print(remote_full_path)
-            if os.path.exists(remote_full_path):
-                with open(remote_full_path, 'rb') as f:
-                    f.seek(offset)
-                    return f.read(length)
-
-        return os.read(fh, length)
 
     def write(self, path, buf, offset, fh):
         full_path = self._full_path(path)
-
-        if self.remote_host and self.remote_directory and self.local_mount_point:
-            print("Trying to write a file in the remote path")
-            remote_full_path = os.path.join(self.local_mount_point, path)
-            print(remote_full_path)
-            if os.path.exists(remote_full_path):
-                with open(remote_full_path, 'rb+') as f:
-                    f.seek(offset)
-                    return f.write(buf)
-
         with open(full_path, 'rb+') as f:
-            f.seek(offset)
+            os.lseek(fh, offset, os.SEEK_SET)
             return f.write(buf)
 
     def truncate(self, path, length, fh=None):
         full_path = self._full_path(path)
-
-        if self.remote_host and self.remote_directory and self.local_mount_point:
-            remote_full_path = os.path.join(self.local_mount_point, path)
-            with open(remote_full_path, 'r+') as f:
-                f.truncate(length)
-            return 0
-
         with open(full_path, 'r+') as f:
             f.truncate(length)
-        return 0
 
-    def flush(self, path, fh):
-        return os.fsync(fh)
+    def unlink(self, path):
+        full_path = self._full_path(path)
+        return os.unlink(full_path)
 
-    def release(self, path, fh):
-        return os.close(fh)
+    def utimens(self, path, times=None):
+        full_path = self._full_path(path)
+        return os.utime(full_path, times)
 
-    def fsync(self, path, fdatasync, fh):
-        return self.flush(path, fh)
-    
-
-# python3 remoteCallBackFuse.py ./mountPoint ./primaryFS --fallback ./fallbackFS --remote 188.40.23.247:/root/sshfs --local ./remote
-
-
-import sys
 
 def main():
     if len(sys.argv) < 3:
@@ -246,6 +165,7 @@ def main():
         FUSE(Passthrough(root, fallbackPath), mountpoint, nothreads=True, foreground=True)
     else:
         FUSE(Passthrough(root), mountpoint, nothreads=True, foreground=True)
+
 
 if __name__ == '__main__':
     main()
